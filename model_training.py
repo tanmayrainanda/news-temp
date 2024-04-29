@@ -125,7 +125,7 @@ summary_field = Field(tokenize=lambda x: [token.text for token in nlp.tokenizer(
 
 # Load the data from the CSV file
 dataset = TabularDataset(
-    path='data_with_summaries.csv',  # assuming the CSV file is in the current directory
+    path='data_cleaned.csv',  # assuming the CSV file is in the current directory
     format='csv',
     fields=[('article', article_field), ('summary', summary_field)]
 )
