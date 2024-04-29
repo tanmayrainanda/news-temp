@@ -13,6 +13,15 @@ wandb.init(project="scan-summarizer")
 # Set device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+config = {
+    'vocab_size': 50000,
+    'embedding_dim': 300,
+    'hidden_dim': 256,
+    'num_layers': 1,
+    'dropout': 0.5,
+    'pad_idx': 0
+}
+
 class FeatureRichEncoder(nn.Module):
     def __init__(self, input_sizes, hidden_size, num_layers=1, dropout=0.1):
         super(FeatureRichEncoder, self).__init__()
@@ -31,8 +40,12 @@ class FeatureRichEncoder(nn.Module):
         embedded = [emb(inp) for emb, inp in zip(self.embeddings, inputs)]
         embedded = torch.cat(embedded, dim=-1)
         embedded = self.dropout(embedded)
-        outputs, hidden = self.encoder(embedded, hidden)
-        return outputs, hidden
+
+        packed_embedded = nn.utils.rnn.pack_padded_sequence(embedded, inputs[1], batch_first=True, enforce_sorted=False)
+        packed_output, hidden = self.encoder(packed_embedded, hidden)
+        output, _ = nn.utils.rnn.pad_packed_sequence(packed_output, batch_first=True)
+
+        return output, hidden
 
     def initHidden(self, batch_size):
         return (torch.zeros(2 * self.num_layers, batch_size, self.hidden_size, device=device),
