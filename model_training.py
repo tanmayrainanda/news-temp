@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torchtext.data import Field, TabularDataset, BucketIterator
-from sklearn.model_selection import train_test_split
+from torchtext.data import Field, TabularDataset
+from torch.utils.data import DataLoader
 import spacy
 import random
 from rouge import Rouge
@@ -14,9 +14,9 @@ wandb.init(project="scan-summarizer")
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 config = {
-    'vocab_size': 25000,
+    'vocab_size': 15000,  # Reduced vocabulary size
     'embedding_dim': 300,
-    'hidden_dim': 256,
+    'hidden_dim': 128,  # Reduced hidden size
     'num_layers': 1,
     'dropout': 0.5,
     'pad_idx': 0
@@ -116,6 +116,8 @@ class Summarizer(nn.Module):
         return final_distribution, decoder_hidden
 
 num_epochs = 10
+batch_size = 8  # Reduced batch size
+max_summary_length = 100  # Maximum length of generated summaries
 
 nlp = spacy.load("en_core_web_sm")
 
@@ -134,28 +136,16 @@ dataset = TabularDataset(
 train_data, test_data = dataset.split(split_ratio=0.8, random_state=random.seed(42))
 
 # Build the vocabularies
-article_field.build_vocab(train_data, max_size=50000)
-summary_field.build_vocab(train_data, max_size=25000)
+article_field.build_vocab(train_data, max_size=config['vocab_size'])
+summary_field.build_vocab(train_data, max_size=config['vocab_size'])
 
 # Create the data iterators
-train_iter = BucketIterator(
-    train_data,
-    batch_size=32,
-    sort_key=lambda x: len(x.article),
-    sort_within_batch=True,
-    device=device
-)
-
-test_iter = BucketIterator(
-    test_data,
-    batch_size=32,
-    sort_within_batch=True,
-    device=device
-)
+train_iter = DataLoader(train_data, batch_size=batch_size, shuffle=True)
+test_iter = DataLoader(test_data, batch_size=batch_size)
 
 # Define the model
 input_sizes = [len(article_field.vocab)] * len(article_field.vocab.stoi)
-hidden_size = 256
+hidden_size = config['hidden_dim']
 output_size = len(summary_field.vocab)
 model = Summarizer(input_sizes, hidden_size, output_size).to(device)  # Move model to GPU
 
@@ -176,7 +166,7 @@ for epoch in range(num_epochs):
         decoder_input = summaries[:, :-1].to(device)  # Move tensors to GPU
         decoder_target = summaries[:, 1:].to(device)
 
-        decoder_hidden = model.decoder.initHidden(batch.batch_size)
+        decoder_hidden = model.decoder.initHidden(batch_size)
         optimizer.zero_grad()
 
         final_distribution, _ = model(articles.to(device), decoder_input, decoder_hidden)  # Move tensors to GPU
@@ -194,7 +184,6 @@ model.eval()
 rouge = Rouge()
 all_generated_summaries = []
 all_reference_summaries = []
-max_summary_length = 100  # Maximum length of generated summaries
 
 def generate_batch_summaries(batch):
     articles, article_lengths = batch.article
@@ -235,8 +224,9 @@ for batch in test_iter:
 
 scores = rouge.get_scores(all_generated_summaries, all_reference_summaries, avg=True)
 print(scores)
-wandb.log("Rouge Score:",scores)
-#Save the model
+wandb.log({"Rouge Score": scores})
+
+# Save the model
 torch.save(model.state_dict(), 'summarizer.pth')
 wandb.save('summarizer.pth')
 wandb.finish()
