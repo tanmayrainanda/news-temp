@@ -22,6 +22,9 @@ config = {
     'pad_idx': 0
 }
 
+# Reducing batch size
+batch_size = 16
+
 class FeatureRichEncoder(nn.Module):
     def __init__(self, input_sizes, hidden_size, num_layers=1, dropout=0.1):
         super(FeatureRichEncoder, self).__init__()
@@ -140,7 +143,7 @@ summary_field.build_vocab(train_data, max_size=25000)
 # Create the data iterators
 train_iter = BucketIterator(
     train_data,
-    batch_size=32,
+    batch_size=batch_size,
     sort_key=lambda x: len(x.article),
     sort_within_batch=True,
     device=device
@@ -148,7 +151,7 @@ train_iter = BucketIterator(
 
 test_iter = BucketIterator(
     test_data,
-    batch_size=32,
+    batch_size=batch_size,
     sort_within_batch=True,
     device=device
 )
@@ -163,13 +166,17 @@ model = Summarizer(input_sizes, hidden_size, output_size).to(device)  # Move mod
 criterion = nn.NLLLoss(ignore_index=summary_field.vocab.stoi['<pad>'])
 optimizer = optim.Adam(model.parameters())
 
+# Gradient accumulation
+accumulation_steps = 4
+
 # Training loop
 wandb.watch(model)
 for epoch in range(num_epochs):
     model.train()
     epoch_loss = 0
+    optimizer.zero_grad()
 
-    for batch in train_iter:
+    for i, batch in enumerate(train_iter):
         articles, article_lengths = batch.article
         summaries, summary_lengths = batch.summary
 
@@ -177,13 +184,16 @@ for epoch in range(num_epochs):
         decoder_target = summaries[:, 1:].to(device)
 
         decoder_hidden = model.decoder.initHidden(batch.batch_size)
-        optimizer.zero_grad()
 
         final_distribution, _ = model(articles.to(device), decoder_input, decoder_hidden)  # Move tensors to GPU
 
         loss = criterion(final_distribution.view(-1, output_size), decoder_target.contiguous().view(-1))
+        loss = loss / accumulation_steps
         loss.backward()
-        optimizer.step()
+
+        if (i + 1) % accumulation_steps == 0:
+            optimizer.step()
+            optimizer.zero_grad()
 
         epoch_loss += loss.item()
     print(f'Epoch: {epoch+1}, Train Loss: {epoch_loss/len(train_iter)}')
