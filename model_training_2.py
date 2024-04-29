@@ -14,16 +14,16 @@ wandb.init(project="scan-summarizer")
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 config = {
-    'vocab_size': 25000,
-    'embedding_dim': 300,
-    'hidden_dim': 256,
+    'vocab_size': 10000,
+    'embedding_dim': 150,
+    'hidden_dim': 128,
     'num_layers': 1,
     'dropout': 0.5,
     'pad_idx': 0
 }
 
 # Reducing batch size
-batch_size = 16
+batch_size = 8
 
 class FeatureRichEncoder(nn.Module):
     def __init__(self, input_sizes, hidden_size, num_layers=1, dropout=0.1):
@@ -137,8 +137,8 @@ dataset = TabularDataset(
 train_data, test_data = dataset.split(split_ratio=0.8, random_state=random.seed(42))
 
 # Build the vocabularies
-article_field.build_vocab(train_data, max_size=50000)
-summary_field.build_vocab(train_data, max_size=25000)
+article_field.build_vocab(train_data, max_size=15000)
+summary_field.build_vocab(train_data, max_size=10000)
 
 # Create the data iterators
 train_iter = BucketIterator(

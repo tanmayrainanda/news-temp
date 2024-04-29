@@ -1,27 +1,27 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
-from torchtext.data import Field, TabularDataset
-from torch.utils.data import DataLoader
+from torchtext.data import Field, TabularDataset, BucketIterator
 import spacy
 import random
 from rouge import Rouge
 import wandb
 
 wandb.init(project="scan-summarizer")
-# Set device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 config = {
-    'vocab_size': 15000,  # Reduced vocabulary size
+    'vocab_size': 15000,
     'embedding_dim': 300,
-    'hidden_dim': 128,  # Reduced hidden size
+    'hidden_dim': 128,
     'num_layers': 1,
     'dropout': 0.5,
     'pad_idx': 0
 }
 
+max_summary_length = 100
+
+print("checkpoint 1")
 class FeatureRichEncoder(nn.Module):
     def __init__(self, input_sizes, hidden_size, num_layers=1, dropout=0.1):
         super(FeatureRichEncoder, self).__init__()
@@ -73,10 +73,10 @@ class HierarchicalAttentionDecoder(nn.Module):
         # Hierarchical attention computation
         word_attns = torch.tanh(self.word_attention(encoder_outputs))
         word_attns = word_attns.view(batch_size, seq_len, -1)
-        word_attns = F.softmax(word_attns, dim=2)
+        word_attns = torch.softmax(word_attns, dim=2)
 
         sentence_attns = torch.tanh(self.sentence_attention(encoder_outputs))
-        sentence_attns = F.softmax(sentence_attns, dim=1)
+        sentence_attns = torch.softmax(sentence_attns, dim=1)
         sentence_attns = sentence_attns.unsqueeze(2)
 
         combined_attns = word_attns * sentence_attns
@@ -93,8 +93,8 @@ class HierarchicalAttentionDecoder(nn.Module):
         pointer_switch = torch.sigmoid(self.pointer_switch(combined_vector))
 
         # Generator and pointer distributions
-        generator_output = F.log_softmax(self.generator(combined_vector), dim=-1)
-        pointer_distribution = F.softmax(word_attns.view(batch_size, -1), dim=-1)
+        generator_output = torch.log_softmax(self.generator(combined_vector), dim=-1)
+        pointer_distribution = torch.softmax(word_attns.view(batch_size, -1), dim=-1)
 
         # Combine generator and pointer
         final_distribution = pointer_switch * pointer_distribution + (1 - pointer_switch) * generator_output
@@ -116,10 +116,10 @@ class Summarizer(nn.Module):
         return final_distribution, decoder_hidden
 
 num_epochs = 10
-batch_size = 8  # Reduced batch size
-max_summary_length = 100  # Maximum length of generated summaries
 
 nlp = spacy.load("en_core_web_sm")
+
+print("checkpoint 2")
 
 # Define the fields for input and output sequences
 article_field = Field(tokenize=lambda x: [token.text for token in nlp.tokenizer(x)], lower=True, include_lengths=True, batch_first=True)
@@ -135,26 +135,36 @@ dataset = TabularDataset(
 # Perform train-test split
 train_data, test_data = dataset.split(split_ratio=0.8, random_state=random.seed(42))
 
-# Build the vocabularies
-article_field.build_vocab(train_data, max_size=config['vocab_size'])
-summary_field.build_vocab(train_data, max_size=config['vocab_size'])
+print("checkpoint 3")
+# Reduce maximum vocabulary size
+article_field.build_vocab(train_data, max_size=10000)  # Adjust max_size as needed
+summary_field.build_vocab(train_data, max_size=5000)  # Adjust max_size as needed
 
-# Create the data iterators
-train_iter = DataLoader(train_data, batch_size=batch_size, shuffle=True)
-test_iter = DataLoader(test_data, batch_size=batch_size)
+# Define the data iterators with static padding
+batch_size = 32
+partial_train_data = [train_data[i:i+batch_size] for i in range(0, len(train_data), batch_size)]
+partial_test_data = [test_data[i:i+batch_size] for i in range(0, len(test_data), batch_size)]
+
+# Decrease batch size
+new_batch_size = 16  # Adjust batch size as needed
+train_iter = [BucketIterator(partial, batch_size=new_batch_size, sort_key=lambda x: len(x.article), sort_within_batch=True, device=device) for partial in partial_train_data]
+test_iter = [BucketIterator(partial, batch_size=new_batch_size, sort_key=lambda x: len(x.article), sort_within_batch=True, device=device, train=False) for partial in partial_test_data]
+
+
+print("checkpoint 4")
 
 # Define the model
 input_sizes = [len(article_field.vocab)] * len(article_field.vocab.stoi)
 hidden_size = config['hidden_dim']
 output_size = len(summary_field.vocab)
-model = Summarizer(input_sizes, hidden_size, output_size).to(device)  # Move model to GPU
+model = Summarizer(input_sizes, hidden_size, output_size).to(device)
 
 # Define the loss function and optimizer
 criterion = nn.NLLLoss(ignore_index=summary_field.vocab.stoi['<pad>'])
 optimizer = optim.Adam(model.parameters())
 
+print("checkpoint 5")
 # Training loop
-wandb.watch(model)
 for epoch in range(num_epochs):
     model.train()
     epoch_loss = 0
@@ -163,13 +173,13 @@ for epoch in range(num_epochs):
         articles, article_lengths = batch.article
         summaries, summary_lengths = batch.summary
 
-        decoder_input = summaries[:, :-1].to(device)  # Move tensors to GPU
+        decoder_input = summaries[:, :-1].to(device)
         decoder_target = summaries[:, 1:].to(device)
 
-        decoder_hidden = model.decoder.initHidden(batch_size)
+        decoder_hidden = model.decoder.initHidden(1)
         optimizer.zero_grad()
 
-        final_distribution, _ = model(articles.to(device), decoder_input, decoder_hidden)  # Move tensors to GPU
+        final_distribution, _ = model(articles.to(device), decoder_input, decoder_hidden)
 
         loss = criterion(final_distribution.view(-1, output_size), decoder_target.contiguous().view(-1))
         loss.backward()
@@ -184,6 +194,8 @@ model.eval()
 rouge = Rouge()
 all_generated_summaries = []
 all_reference_summaries = []
+
+print("checkpoint 6")
 
 def generate_batch_summaries(batch):
     articles, article_lengths = batch.article
@@ -224,7 +236,6 @@ for batch in test_iter:
 
 scores = rouge.get_scores(all_generated_summaries, all_reference_summaries, avg=True)
 print(scores)
-wandb.log({"Rouge Score": scores})
 
 # Save the model
 torch.save(model.state_dict(), 'summarizer.pth')
